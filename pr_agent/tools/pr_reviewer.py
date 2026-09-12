@@ -187,14 +187,14 @@ class PRReviewer:
         review_failed = False
         persistent_write_failed = False
         try:
-            if get_settings().pr_reviewer.get("request_self_review", False):
+            if not self.git_provider.get_files():
+                get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
+                return None
+            if get_settings().config.publish_output and get_settings().pr_reviewer.get("request_self_review", False):
                 try:
                     self.git_provider.request_self_review()
                 except Exception as e:
                     get_logger().info(f"Failed to request self-review: {e}")
-            if not self.git_provider.get_files():
-                get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
-                return None
 
             if self.incremental.is_incremental:
                 can_run = self._can_run_incremental_review()
@@ -273,10 +273,10 @@ class PRReviewer:
             if should_request_changes:
                 get_logger().info("Submitting PR review with REQUEST_CHANGES event")
                 try:
-                    self.git_provider.request_changes(pr_review)
+                    if not self.git_provider.request_changes(pr_review):
+                        get_logger().warning("request_changes returned False; provider may not support REQUEST_CHANGES reviews")
                 except Exception as e:
                     get_logger().exception(f"Failed to submit review as REQUEST_CHANGES: {e}")
-
             # publish the review
             # Providers that support it (GitLab) can post the review's final comment as a resolvable thread.
             # This intent applies to the review only - never to status comments or the output of other tools.

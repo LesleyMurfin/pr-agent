@@ -60,20 +60,69 @@ def test_github_provider_request_changes_unexpected_state(state):
 def test_pr_reviewer_requests_self_review_when_enabled():
     reviewer = PRReviewer.__new__(PRReviewer)
     reviewer.git_provider = MagicMock()
+    reviewer.git_provider.get_files.return_value = [
+        FilePatchInfo(base_file="a.py", head_file="a.py", patch="@@ -1 +1 @@", filename="a.py")
+    ]
+    reviewer.git_provider.should_publish_review_as_thread.return_value = False
+    reviewer.git_provider.publish_comment = MagicMock()
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.pr_url = "https://github.com/org/repo/pull/1"
+    reviewer.vars = {}
+    reviewer.prediction = ""
+
+    snapshot = snapshot_settings(["config.publish_output", "pr_reviewer.request_self_review"])
+    try:
+        get_settings().set("config.publish_output", True)
+
+        # Default is false: should not request review
+        get_settings().set("pr_reviewer.request_self_review", False)
+        asyncio.run(reviewer.run())
+        reviewer.git_provider.request_self_review.assert_not_called()
+
+        # When enabled: should request review
+        get_settings().set("pr_reviewer.request_self_review", True)
+        asyncio.run(reviewer.run())
+        reviewer.git_provider.request_self_review.assert_called_once()
+    finally:
+        restore_settings(snapshot)
+
+
+def test_pr_reviewer_self_review_not_called_when_publish_output_false():
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = MagicMock()
+    reviewer.git_provider.get_files.return_value = [
+        FilePatchInfo(base_file="a.py", head_file="a.py", patch="@@ -1 +1 @@", filename="a.py")
+    ]
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.pr_url = "https://github.com/org/repo/pull/1"
+    reviewer.vars = {}
+    reviewer.prediction = ""
+
+    snapshot = snapshot_settings(["config.publish_output", "pr_reviewer.request_self_review"])
+    try:
+        get_settings().set("config.publish_output", False)
+        get_settings().set("pr_reviewer.request_self_review", True)
+        asyncio.run(reviewer.run())
+        reviewer.git_provider.request_self_review.assert_not_called()
+    finally:
+        restore_settings(snapshot)
+
+
+def test_pr_reviewer_self_review_not_called_when_no_files():
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = MagicMock()
     reviewer.git_provider.get_files.return_value = []
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.pr_url = "https://github.com/org/repo/pull/1"
 
-    # Default is false: should not request review
-    with patch.dict(get_settings().pr_reviewer, {"request_self_review": False}):
+    snapshot = snapshot_settings(["config.publish_output", "pr_reviewer.request_self_review"])
+    try:
+        get_settings().set("config.publish_output", True)
+        get_settings().set("pr_reviewer.request_self_review", True)
         asyncio.run(reviewer.run())
-    reviewer.git_provider.request_self_review.assert_not_called()
-
-    # When enabled: should request review
-    with patch.dict(get_settings().pr_reviewer, {"request_self_review": True}):
-        asyncio.run(reviewer.run())
-    reviewer.git_provider.request_self_review.assert_called_once()
-
+        reviewer.git_provider.request_self_review.assert_not_called()
+    finally:
+        restore_settings(snapshot)
 
 @pytest.mark.parametrize("enable_request_changes", [True, False])
 def test_pr_reviewer_request_changes_driven_by_run(enable_request_changes):
@@ -124,6 +173,59 @@ def test_pr_reviewer_request_changes_driven_by_run(enable_request_changes):
             reviewer.git_provider.request_changes.assert_called_once_with("Prepared review body")
         else:
             reviewer.git_provider.request_changes.assert_not_called()
+    finally:
+        restore_settings(snapshot)
+
+def test_pr_reviewer_request_changes_warns_when_not_supported():
+    snapshot = snapshot_settings([
+        "config.publish_output",
+        "pr_reviewer.enable_request_changes",
+        "pr_reviewer.require_merge_recommendation",
+    ])
+    try:
+        get_settings().set("config.publish_output", True)
+        get_settings().set("pr_reviewer.enable_request_changes", True)
+        get_settings().set("pr_reviewer.require_merge_recommendation", False)
+
+        reviewer = PRReviewer.__new__(PRReviewer)
+        reviewer.git_provider = MagicMock()
+        reviewer.git_provider.get_files.return_value = [
+            FilePatchInfo(base_file="a.py", head_file="a.py", patch="@@ -1 +1 @@", filename="a.py")
+        ]
+        reviewer.git_provider.should_publish_review_as_thread.return_value = False
+        reviewer.git_provider.publish_comment = MagicMock()
+        # Simulate non-GitHub provider returning False
+        reviewer.git_provider.request_changes = MagicMock(return_value=False)
+
+        reviewer.incremental = SimpleNamespace(is_incremental=False)
+        reviewer.pr_url = "https://github.com/org/repo/pull/1"
+        reviewer.vars = {}
+        reviewer.prediction = "dummy prediction"
+        reviewer.prediction_data = {
+            "review": {
+                "merge_recommendation": "changes_required"
+            }
+        }
+
+        async def fake_extract(git_provider, vars):
+            return None
+
+        async def fake_retry(func, *args, **kwargs):
+            return None
+
+        with (
+            patch("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", side_effect=fake_extract),
+            patch("pr_agent.tools.pr_reviewer.retry_with_fallback_models", side_effect=fake_retry),
+            patch.object(reviewer, "_prepare_pr_review", return_value="Prepared review body"),
+            patch.object(reviewer, "_should_publish_review_no_suggestions", return_value=True),
+            patch("pr_agent.tools.pr_reviewer.get_logger") as mock_get_logger,
+        ):
+            asyncio.run(reviewer.run())
+
+        reviewer.git_provider.request_changes.assert_called_once_with("Prepared review body")
+        mock_get_logger().warning.assert_any_call(
+            "request_changes returned False; provider may not support REQUEST_CHANGES reviews"
+        )
     finally:
         restore_settings(snapshot)
 

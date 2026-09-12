@@ -1633,10 +1633,12 @@ class GithubProvider(GitProvider):
                 return False
             body = self.limit_output_characters(body, self.max_comment_chars)
             res = self.pr.create_review(body=body, event="REQUEST_CHANGES")
-            if getattr(res, "state", "") == "CHANGES_REQUESTED":
+            state = getattr(res, "state", None)
+            if state == "CHANGES_REQUESTED":
                 get_logger().info("Successfully submitted review with REQUEST_CHANGES")
                 return True
-            return True
+            get_logger().warning(f"Unexpected review state after REQUEST_CHANGES: {state}")
+            return False
         except Exception as e:
             get_logger().exception(f"Failed to submit REQUEST_CHANGES review, error: {e}")
             return False

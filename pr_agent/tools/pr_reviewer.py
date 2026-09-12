@@ -139,7 +139,10 @@ class PRReviewer:
             "require_tests": get_settings().pr_reviewer.require_tests_review,
             "require_estimate_effort_to_review": get_settings().pr_reviewer.require_estimate_effort_to_review,
             "require_risk_assessment": get_settings().pr_reviewer.get("require_risk_assessment", False),
-            "require_merge_recommendation": get_settings().pr_reviewer.get("require_merge_recommendation", False),
+            "require_merge_recommendation": (
+                get_settings().pr_reviewer.get("require_merge_recommendation", False)
+                or get_settings().pr_reviewer.get("enable_request_changes", False)
+            ),
             "require_priority_files": get_settings().pr_reviewer.get("require_priority_files", False),
             "require_estimate_contribution_time_cost": get_settings().pr_reviewer.require_estimate_contribution_time_cost,
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,

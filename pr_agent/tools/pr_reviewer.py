@@ -273,7 +273,8 @@ class PRReviewer:
             if should_request_changes:
                 get_logger().info("Submitting PR review with REQUEST_CHANGES event")
                 try:
-                    if not self.git_provider.request_changes(pr_review):
+                    request_changes_body = "Changes requested based on PR review."
+                    if not self.git_provider.request_changes(request_changes_body):
                         get_logger().warning("request_changes returned False; provider may not support REQUEST_CHANGES reviews")
                 except Exception as e:
                     get_logger().exception(f"Failed to submit review as REQUEST_CHANGES: {e}")

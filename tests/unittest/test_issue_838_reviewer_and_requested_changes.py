@@ -170,7 +170,7 @@ def test_pr_reviewer_request_changes_driven_by_run(enable_request_changes):
             asyncio.run(reviewer.run())
 
         if enable_request_changes:
-            reviewer.git_provider.request_changes.assert_called_once_with("Prepared review body")
+            reviewer.git_provider.request_changes.assert_called_once_with("Changes requested based on PR review.")
         else:
             reviewer.git_provider.request_changes.assert_not_called()
     finally:
@@ -221,8 +221,7 @@ def test_pr_reviewer_request_changes_warns_when_not_supported():
             patch("pr_agent.tools.pr_reviewer.get_logger") as mock_get_logger,
         ):
             asyncio.run(reviewer.run())
-
-        reviewer.git_provider.request_changes.assert_called_once_with("Prepared review body")
+        reviewer.git_provider.request_changes.assert_called_once_with("Changes requested based on PR review.")
         mock_get_logger().warning.assert_any_call(
             "request_changes returned False; provider may not support REQUEST_CHANGES reviews"
         )

@@ -178,13 +178,17 @@ class PRReviewer:
                 is_incremental = True
         incremental = IncrementalPR(is_incremental)
         return incremental
-
     async def run(self) -> None:
         init_run_details()
         progress_response = None
         review_failed = False
         persistent_write_failed = False
         try:
+            if get_settings().pr_reviewer.get("request_self_review", False):
+                try:
+                    self.git_provider.request_self_review()
+                except Exception as e:
+                    get_logger().info(f"Failed to request self-review: {e}")
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
                 return None
@@ -251,6 +255,24 @@ class PRReviewer:
                 get_logger().info(reason)
                 get_settings().data = {"artifact": pr_review}
                 return
+
+            # Check if changes are requested by model recommendation or findings
+            data_for_eval = self.prediction_data if getattr(self, "prediction_data", None) is not None else (
+                self._load_review_yaml(self.prediction) if getattr(self, "prediction", None) else {}
+            )
+            review_dict = (data_for_eval.get("review") or {}) if isinstance(data_for_eval, dict) else {}
+            merge_rec = str(review_dict.get("merge_recommendation") or "").strip().lower()
+            should_request_changes = (
+                get_settings().pr_reviewer.get("enable_request_changes", False)
+                and merge_rec == "changes_required"
+                and hasattr(self.git_provider, "request_changes")
+            )
+            if should_request_changes:
+                get_logger().info("Submitting PR review with REQUEST_CHANGES event")
+                try:
+                    self.git_provider.request_changes(pr_review)
+                except Exception as e:
+                    get_logger().exception(f"Failed to submit review as REQUEST_CHANGES: {e}")
 
             # publish the review
             # Providers that support it (GitLab) can post the review's final comment as a resolvable thread.
@@ -949,7 +971,6 @@ class PRReviewer:
                 "keeping findings in the review summary")
             return set()
         return {fingerprint for fingerprint in fingerprints if store.seen(fingerprint)}
-
     def _publish_key_issues_as_inline_comments(self, data: dict) -> dict:
         issues = (data.get("review") or {}).get("key_issues_to_review")
         if not isinstance(issues, list) or not issues:

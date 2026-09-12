@@ -1595,6 +1595,53 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to auto-approve, error: {e}")
             return False
 
+    def request_self_review(self) -> bool:
+        """
+        Request a review from the PR-Agent itself on the current PR.
+        """
+        try:
+            if not self.pr:
+                get_logger().warning("Cannot request review: no PR object found")
+                return False
+            user_id = self.get_user_id()
+            if not user_id:
+                # For GitHub Apps, github_user_id or app name might be in settings
+                user_id = get_settings().get("GITHUB.APP_NAME", "")
+            if not user_id:
+                get_logger().info("Could not determine bot/user identity for request_self_review")
+                return False
+            # Cannot request review from PR author
+            pr_author = getattr(getattr(self.pr, "user", None), "login", "")
+            if pr_author and pr_author.lower() == user_id.lower():
+                get_logger().info(f"Skipping request_self_review: bot ({user_id}) is the PR author")
+                return False
+            self.pr.create_review_request(reviewers=[user_id])
+            get_logger().info(f"Successfully requested review from {user_id}")
+            return True
+        except Exception as e:
+            # Common cases: 422 (already requested or author), 403 (permissions)
+            get_logger().info(f"Could not request review for self ({e})")
+            return False
+
+    def request_changes(self, body: str) -> bool:
+        """
+        Submit a formal GitHub PR review with event='REQUEST_CHANGES'.
+        """
+        try:
+            if not self.pr:
+                get_logger().error("Cannot request changes: no PR object found")
+                return False
+            body = self.limit_output_characters(body, self.max_comment_chars)
+            res = self.pr.create_review(body=body, event="REQUEST_CHANGES")
+            if getattr(res, "state", "") == "CHANGES_REQUESTED":
+                get_logger().info("Successfully submitted review with REQUEST_CHANGES")
+                return True
+            return True
+        except Exception as e:
+            get_logger().exception(f"Failed to submit REQUEST_CHANGES review, error: {e}")
+            return False
+
+
     def calc_pr_statistics(self, pull_request_data: dict):
             return {}
 

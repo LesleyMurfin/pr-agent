@@ -633,6 +633,12 @@ class GitProvider(ABC):
     def auto_approve(self) -> bool:
         return False
 
+    def request_self_review(self) -> bool:
+        return False
+
+    def request_changes(self, body: str) -> bool:
+        return False
+
     def calc_pr_statistics(self, pull_request_data: dict):
         return {}
 

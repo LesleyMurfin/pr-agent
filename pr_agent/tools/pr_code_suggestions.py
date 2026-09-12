@@ -26,6 +26,7 @@ from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.algo.badge import ensure_badge
 from pr_agent.algo.utils import (
     ModelType,
     PRCodeSuggestionsHeader,
@@ -1073,10 +1074,10 @@ class PRCodeSuggestions:
             score = d.get("score")
             header = f"**Suggestion:** {content} [{label}, importance: {score}]" if score \
                 else f"**Suggestion:** {content} [{label}]"
+            body = ensure_badge(header, score=score)
             if new_code_snippet and is_applicable:
-                body = f"{header}\n```suggestion\n" + new_code_snippet + "\n```"
+                body = f"{body}\n```suggestion\n" + new_code_snippet + "\n```"
             else:
-                body = header
                 if new_code_snippet:
                     body += (f"\n\nProposed code (not offered as a committable change because {fallback_reason}):\n"
                              f"```\n{new_code_snippet}\n```")

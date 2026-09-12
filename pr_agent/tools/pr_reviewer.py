@@ -47,6 +47,7 @@ from pr_agent.algo.utils import (
     show_relevant_configurations,
     show_run_details,
 )
+from pr_agent.algo.badge import ensure_badge, build_summary_headers
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
@@ -840,6 +841,9 @@ class PRReviewer:
                                             incremental_review_markdown_text,
                                                git_provider=self.git_provider,
                                                files=self.git_provider.get_diff_files())
+        summary_headers = build_summary_headers(data, markdown_text)
+        if summary_headers and not markdown_text.startswith("## Merge risk:"):
+            markdown_text = summary_headers + markdown_text
 
         if self.review_chunk_count > 1:
             markdown_text += (
@@ -1017,7 +1021,8 @@ class PRReviewer:
             return None
 
         relevant_file = file.filename.strip()
-        body = f"**{issue_header}**\n\n{issue_content}" if issue_header else issue_content
+        raw_body = f"**{issue_header}**\n\n{issue_content}" if issue_header else issue_content
+        body = ensure_badge(raw_body)
         return {"body": body,
                 "relevant_file": relevant_file,
                 "relevant_lines_start": start_line,

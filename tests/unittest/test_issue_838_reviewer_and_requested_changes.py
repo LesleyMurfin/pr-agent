@@ -382,3 +382,92 @@ def test_prepare_pr_review_agent_prompt_can_be_disabled():
         assert "Autofix" not in review_markdown
     finally:
         restore_settings(snapshot)
+def test_badge_ensure_and_not_doubled():
+    from pr_agent.algo.badge import ensure_badge, has_badge
+
+    # Missing badge gets prepended with parsed pillar and impact
+    raw_comment = "There is a severe security vulnerability with sql injection in login query."
+    badged = ensure_badge(raw_comment)
+    assert has_badge(badged)
+    assert badged.startswith("_🔴 high_ | _🔒 security_") or badged.startswith("_🟡 moderate_ | _🔒 security_")
+    assert "sql injection" in badged
+
+    # If badge already exists, do not duplicate
+    re_badged = ensure_badge(badged)
+    assert re_badged == badged
+    assert re_badged.count("_ | _") == 2
+
+    # Default badge when no keywords
+    unspecified = ensure_badge("Something else changed here.")
+    assert unspecified.startswith("_🟡 moderate_ | _📦 other_ | _📁 unspecified (this repo)_")
+    assert ensure_badge(unspecified) == unspecified
+
+
+def test_prepare_pr_review_includes_summary_headers():
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = MagicMock()
+    reviewer.git_provider.is_supported.return_value = True
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.remaining_files_list = []
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.set_review_labels = MagicMock()
+    reviewer._review_state_result = None
+    reviewer.prediction_data = {
+        "review": {
+            "risk_level": "high",
+            "key_issues_to_review": [
+                {
+                    "relevant_file": "auth.py",
+                    "issue_header": "Security issue",
+                    "issue_content": "Token leak vulnerability in auth handler.",
+                    "start_line": 10,
+                    "end_line": 12,
+                }
+            ],
+        }
+    }
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="## PR Reviewer Guide\n"),
+    ):
+        review_markdown = reviewer._prepare_pr_review()
+
+    assert review_markdown.startswith("## Merge risk:")
+    assert "## Merge risk: 🔴 high" in review_markdown
+    assert "## Pillars:" in review_markdown
+    assert "🔒 security" in review_markdown
+    assert "## Impact:" in review_markdown
+    assert "## PR Reviewer Guide" in review_markdown
+
+
+def test_publish_inline_comments_ensures_badge_on_github_provider():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.pr = MagicMock()
+    provider.last_commit_id = "test-sha"
+    provider.max_comment_chars = 1000
+
+    created_comments = []
+    def fake_create_review(commit, comments):
+        nonlocal created_comments
+        created_comments = comments
+        return SimpleNamespace(state="COMMENTED")
+
+    provider.pr.create_review = fake_create_review
+
+    # Input comment without badge
+    input_comments = [{"path": "app.py", "body": "Potential buffer overflow in packet parser.", "line": 5, "side": "RIGHT"}]
+    provider.publish_inline_comments(input_comments)
+
+    assert len(created_comments) == 1
+    comment_body = created_comments[0]["body"]
+    assert comment_body.startswith("_")
+    assert "🔒 security" in comment_body
+    assert "Potential buffer overflow in packet parser." in comment_body
+
+    # Publishing already badged comment does not duplicate
+    created_comments = []
+    provider.publish_inline_comments([{"path": "app.py", "body": comment_body, "line": 5, "side": "RIGHT"}])
+    assert len(created_comments) == 1
+    assert created_comments[0]["body"] == comment_body
+    assert created_comments[0]["body"].count("_ | _") == 2

@@ -18,6 +18,7 @@ from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
+from ..algo.badge import ensure_badge
 from ..algo.inline_comment_dedup import (
     body_fingerprint,
     body_with_markers,
@@ -596,6 +597,10 @@ class GithubProvider(GitProvider):
         store = None
         pending_fingerprints = []
         dedup_code_fp_key = "_dedup_code_fp"
+        comments = [
+            dict(c, body=ensure_badge(c["body"])) if c and "body" in c else c
+            for c in comments
+        ]
         if get_settings().get("config.persistent_inline_comments", False):
             store = get_inline_comment_store(self)
             local_seen = set()

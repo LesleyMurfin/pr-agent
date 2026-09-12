@@ -1,1 +1,2 @@
 FROM pragent/pr-agent:github_action
+COPY riley_skills /app/riley_skills

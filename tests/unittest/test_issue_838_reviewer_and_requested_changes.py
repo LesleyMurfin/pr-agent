@@ -12,26 +12,26 @@ from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
-def test_github_provider_request_self_review_success():
+def test_github_provider_request_self_review_creates_review_comment():
     provider = GithubProvider.__new__(GithubProvider)
     provider.pr = MagicMock()
-    provider.pr.user = SimpleNamespace(login="author_user")
-    provider.github_user_id = "pr_agent_bot"
-    provider.github_client = MagicMock()
+    provider.github_user_id = None
+    fake_review = SimpleNamespace(user=SimpleNamespace(login="svc-orca[bot]"))
+    provider.pr.create_review.return_value = fake_review
 
     assert provider.request_self_review() is True
-    provider.pr.create_review_request.assert_called_once_with(reviewers=["pr_agent_bot"])
+    provider.pr.create_review.assert_called_once_with(event="COMMENT", body="Review started.")
+    assert provider.github_user_id == "svc-orca[bot]"
+    # Must not call create_review_request (which fails with 422 for app/bot accounts)
+    provider.pr.create_review_request.assert_not_called()
 
 
-def test_github_provider_request_self_review_skips_when_author():
+def test_github_provider_request_self_review_handles_failure():
     provider = GithubProvider.__new__(GithubProvider)
     provider.pr = MagicMock()
-    provider.pr.user = SimpleNamespace(login="pr_agent_bot")
-    provider.github_user_id = "pr_agent_bot"
-    provider.github_client = MagicMock()
+    provider.pr.create_review.side_effect = RuntimeError("API error")
 
     assert provider.request_self_review() is False
-    provider.pr.create_review_request.assert_not_called()
 
 
 def test_github_provider_request_changes():

@@ -1597,30 +1597,22 @@ class GithubProvider(GitProvider):
 
     def request_self_review(self) -> bool:
         """
-        Request a review from the PR-Agent itself on the current PR.
+        Request / register self review on the current PR.
+        For GitHub App tokens and bots, GitHub rejects create_review_request with 422
+        (non-collaborator). Creating a formal review (event='COMMENT') lists the bot
+        under PR Reviewers without requesting an external collaborator login.
         """
         try:
             if not self.pr:
                 get_logger().warning("Cannot request review: no PR object found")
                 return False
-            user_id = self.get_user_id()
-            if not user_id:
-                # For GitHub Apps, github_user_id or app name might be in settings
-                user_id = get_settings().get("GITHUB.APP_NAME", "")
-            if not user_id:
-                get_logger().info("Could not determine bot/user identity for request_self_review")
-                return False
-            # Cannot request review from PR author
-            pr_author = getattr(getattr(self.pr, "user", None), "login", "")
-            if pr_author and pr_author.lower() == user_id.lower():
-                get_logger().info(f"Skipping request_self_review: bot ({user_id}) is the PR author")
-                return False
-            self.pr.create_review_request(reviewers=[user_id])
-            get_logger().info(f"Successfully requested review from {user_id}")
+            res = self.pr.create_review(event="COMMENT", body="Review started.")
+            if hasattr(res, "user") and hasattr(res.user, "login") and res.user.login:
+                self.github_user_id = res.user.login
+            get_logger().info("Successfully initialized PR review as reviewer")
             return True
         except Exception as e:
-            # Common cases: 422 (already requested or author), 403 (permissions)
-            get_logger().info(f"Could not request review for self ({e})")
+            get_logger().info(f"Could not initialize self-review ({e})")
             return False
 
     def request_changes(self, body: str) -> bool:

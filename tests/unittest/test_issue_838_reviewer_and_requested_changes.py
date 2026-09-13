@@ -12,19 +12,52 @@ from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
-def test_github_provider_request_self_review_creates_review_comment():
+def test_github_provider_request_self_review_calls_create_review_request_and_comment():
     provider = GithubProvider.__new__(GithubProvider)
     provider.pr = MagicMock()
     provider.github_user_id = None
-    fake_review = SimpleNamespace(user=SimpleNamespace(login="svc-orca[bot]"))
+    fake_review = SimpleNamespace(user=SimpleNamespace(login="riley-pr-agent[bot]"))
     provider.pr.create_review.return_value = fake_review
 
     assert provider.request_self_review() is True
+    provider.pr.create_review_request.assert_called_once_with(reviewers=["riley-pr-agent[bot]"])
     provider.pr.create_review.assert_called_once_with(event="COMMENT", body="Review started.")
-    assert provider.github_user_id == "svc-orca[bot]"
-    # Must not call create_review_request (which fails with 422 for app/bot accounts)
-    provider.pr.create_review_request.assert_not_called()
+    assert provider.github_user_id == "riley-pr-agent[bot]"
 
+
+def test_github_provider_request_self_review_handles_422_and_creates_comment():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.pr = MagicMock()
+    provider.github_user_id = None
+    provider.pr.create_review_request.side_effect = RuntimeError("422 Reviews may only be requested from collaborators")
+    fake_review = SimpleNamespace(user=SimpleNamespace(login="riley-pr-agent[bot]"))
+    provider.pr.create_review.return_value = fake_review
+
+    assert provider.request_self_review() is True
+    provider.pr.create_review_request.assert_called_once_with(reviewers=["riley-pr-agent[bot]"])
+    provider.pr.create_review.assert_called_once_with(event="COMMENT", body="Review started.")
+    assert provider.github_user_id == "riley-pr-agent[bot]"
+
+
+def test_github_provider_request_self_review_uses_custom_config_and_never_pr_agent():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.pr = MagicMock()
+    provider.github_user_id = None
+
+    snapshot = snapshot_settings(["GITHUB.APP_NAME", "PR_REVIEWER.SELF_REVIEWER_LOGIN"])
+    try:
+        # Explicit custom login
+        get_settings().set("PR_REVIEWER.SELF_REVIEWER_LOGIN", "custom-bot[bot]")
+        provider.request_self_review()
+        provider.pr.create_review_request.assert_called_with(reviewers=["custom-bot[bot]"])
+
+        # Literal "pr-agent" is never used, falls back to riley-pr-agent[bot]
+        get_settings().set("PR_REVIEWER.SELF_REVIEWER_LOGIN", "")
+        get_settings().set("GITHUB.APP_NAME", "pr-agent")
+        provider.request_self_review()
+        provider.pr.create_review_request.assert_called_with(reviewers=["riley-pr-agent[bot]"])
+    finally:
+        restore_settings(snapshot)
 
 def test_github_provider_request_self_review_handles_failure():
     provider = GithubProvider.__new__(GithubProvider)
@@ -544,7 +577,7 @@ def test_pr_reviewer_forces_request_changes_via_args():
         reviewer.incremental = SimpleNamespace(is_incremental=False)
         reviewer.pr_url = "https://github.com/org/repo/pull/1"
         reviewer.vars = {}
-        reviewer.prediction = ""
+        reviewer.prediction = "dummy_prediction"
         reviewer.prediction_data = {"review": {"merge_recommendation": "no_changes"}}
 
         with (

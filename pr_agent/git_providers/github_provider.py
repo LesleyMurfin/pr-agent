@@ -1603,14 +1603,35 @@ class GithubProvider(GitProvider):
     def request_self_review(self) -> bool:
         """
         Request / register self review on the current PR.
-        For GitHub App tokens and bots, GitHub rejects create_review_request with 422
-        (non-collaborator). Creating a formal review (event='COMMENT') lists the bot
-        under PR Reviewers without requesting an external collaborator login.
+        Calls create_review_request with configured reviewer login (defaulting to
+        GITHUB.APP_NAME, PR_REVIEWER.SELF_REVIEWER_LOGIN, or 'riley-pr-agent[bot]').
+        Always falls back to create_review(event='COMMENT') so Reviews still populates
+        even if create_review_request returns 422. Never falls back to literal 'pr-agent'.
         """
         try:
             if not self.pr:
                 get_logger().warning("Cannot request review: no PR object found")
                 return False
+
+            # Determine target reviewer login; never fallback to literal "pr-agent"
+            candidate = get_settings().get("PR_REVIEWER.SELF_REVIEWER_LOGIN", None)
+            if not candidate:
+                app_name = get_settings().get("GITHUB.APP_NAME", None)
+                if app_name and app_name.strip().lower() != "pr-agent":
+                    candidate = app_name
+            if not candidate or candidate.strip() == "" or candidate.strip().lower() == "pr-agent":
+                user_id = "riley-pr-agent[bot]"
+            else:
+                user_id = candidate.strip()
+
+            # Try create_review_request first
+            try:
+                self.pr.create_review_request(reviewers=[user_id])
+                get_logger().info(f"Successfully requested review from {user_id}")
+            except Exception as e:
+                get_logger().info(f"create_review_request({user_id}) failed ({e}); falling back to create_review(COMMENT)")
+
+            # Always create formal review (COMMENT) so Reviews list still fills
             res = self.pr.create_review(event="COMMENT", body="Review started.")
             if hasattr(res, "user") and hasattr(res.user, "login") and res.user.login:
                 self.github_user_id = res.user.login

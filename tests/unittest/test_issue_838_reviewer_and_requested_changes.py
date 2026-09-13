@@ -505,3 +505,95 @@ def test_publish_inline_comments_ensures_badge_on_github_provider():
     assert len(created_comments) == 1
     assert created_comments[0]["body"] == comment_body
     assert created_comments[0]["body"].count("_ | _") == 2
+
+def test_pr_reviewer_parse_review_event():
+    reviewer = PRReviewer.__new__(PRReviewer)
+    assert reviewer.parse_review_event(["request-changes"]) == "REQUEST_CHANGES"
+    assert reviewer.parse_review_event(["request_changes"]) == "REQUEST_CHANGES"
+    assert reviewer.parse_review_event(["requestchanges"]) == "REQUEST_CHANGES"
+    assert reviewer.parse_review_event(["approve"]) == "APPROVE"
+    assert reviewer.parse_review_event(["APPROVE"]) == "APPROVE"
+    assert reviewer.parse_review_event([]) is None
+    assert reviewer.parse_review_event(None) is None
+    assert reviewer.parse_review_event(["-i"]) is None
+    assert reviewer.parse_review_event(["-i", "request-changes"]) == "REQUEST_CHANGES"
+
+
+def test_pr_reviewer_forces_request_changes_via_args():
+    snapshot = snapshot_settings([
+        "config.publish_output",
+        "pr_reviewer.enable_request_changes",
+        "pr_reviewer.require_merge_recommendation",
+    ])
+    try:
+        get_settings().set("config.publish_output", True)
+        get_settings().set("pr_reviewer.enable_request_changes", False)
+        get_settings().set("pr_reviewer.require_merge_recommendation", False)
+
+        reviewer = PRReviewer.__new__(PRReviewer)
+        reviewer.args = ["request-changes"]
+        reviewer.forced_event = reviewer.parse_review_event(reviewer.args)
+        reviewer.git_provider = MagicMock()
+        reviewer.git_provider.get_files.return_value = [
+            FilePatchInfo(base_file="a.py", head_file="a.py", patch="@@ -1 +1 @@", filename="a.py")
+        ]
+        reviewer.git_provider.should_publish_review_as_thread.return_value = False
+        reviewer.git_provider.publish_comment = MagicMock()
+        reviewer.git_provider.request_changes = MagicMock(return_value=True)
+
+        reviewer.incremental = SimpleNamespace(is_incremental=False)
+        reviewer.pr_url = "https://github.com/org/repo/pull/1"
+        reviewer.vars = {}
+        reviewer.prediction = ""
+        reviewer.prediction_data = {"review": {"merge_recommendation": "no_changes"}}
+
+        with (
+            patch.object(reviewer, "_can_run_incremental_review", return_value=True),
+            patch.object(reviewer, "_prepare_prediction", return_value=None),
+            patch.object(reviewer, "_prepare_pr_review", return_value="Prepared review body"),
+            patch.object(reviewer, "_should_publish_review_no_suggestions", return_value=True),
+        ):
+            asyncio.run(reviewer.run())
+
+        reviewer.git_provider.request_changes.assert_called_once_with("Changes requested based on PR review.")
+    finally:
+        restore_settings(snapshot)
+
+
+def test_pr_reviewer_approve_command_calls_auto_approve():
+    snapshot = snapshot_settings(["config.publish_output"])
+    try:
+        get_settings().set("config.publish_output", True)
+
+        reviewer = PRReviewer.__new__(PRReviewer)
+        reviewer.args = ["approve"]
+        reviewer.forced_event = reviewer.parse_review_event(reviewer.args)
+        reviewer.git_provider = MagicMock()
+        reviewer.git_provider.get_files.return_value = [
+            FilePatchInfo(base_file="a.py", head_file="a.py", patch="@@ -1 +1 @@", filename="a.py")
+        ]
+        reviewer.git_provider.auto_approve.return_value = True
+        reviewer.git_provider.publish_comment = MagicMock()
+        reviewer.incremental = SimpleNamespace(is_incremental=False)
+        reviewer.pr_url = "https://github.com/org/repo/pull/1"
+
+        asyncio.run(reviewer.run())
+
+        reviewer.git_provider.auto_approve.assert_called_once()
+        reviewer.git_provider.publish_comment.assert_called_once_with("Approved PR")
+    finally:
+        restore_settings(snapshot)
+
+
+def test_github_provider_auto_approve():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.pr = MagicMock()
+    fake_review = SimpleNamespace(state="APPROVED")
+    provider.pr.create_review.return_value = fake_review
+
+    assert provider.auto_approve() is True
+    provider.pr.create_review.assert_called_once_with(event="APPROVE")
+
+    # Test failed state
+    provider.pr.create_review.return_value = SimpleNamespace(state="PENDING")
+    assert provider.auto_approve() is False

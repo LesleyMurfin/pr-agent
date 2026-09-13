@@ -93,6 +93,7 @@ class PRReviewer:
         """
         self.git_provider = get_git_provider_with_context(pr_url)
         self.args = args
+        self.forced_event = self.parse_review_event(args)
         self.incremental = self.parse_incremental(args)  # -i command
         if self.incremental and self.incremental.is_incremental:
             self.git_provider.get_incremental_commits(self.incremental)
@@ -174,12 +175,24 @@ class PRReviewer:
             get_settings().pr_review_prompt.user
         )
 
+    def parse_review_event(self, args: List[str]) -> Optional[str]:
+        if not args:
+            return None
+        for arg in args:
+            arg_clean = arg.strip().lower().replace("_", "-")
+            if arg_clean in ("request-changes", "requestchanges"):
+                return "REQUEST_CHANGES"
+            if arg_clean == "approve":
+                return "APPROVE"
+        return None
+
     def parse_incremental(self, args: List[str]):
         is_incremental = False
-        if args and len(args) >= 1:
-            arg = args[0]
-            if arg == "-i":
-                is_incremental = True
+        if args:
+            for arg in args:
+                if arg == "-i":
+                    is_incremental = True
+                    break
         incremental = IncrementalPR(is_incremental)
         return incremental
     async def run(self) -> None:
@@ -203,10 +216,17 @@ class PRReviewer:
                 if not can_run and self.incremental.is_incremental:
                     return None
 
-            # if isinstance(self.args, list) and self.args and self.args[0] == 'auto_approve':
-            #     get_logger().info(f'Auto approve flow PR: {self.pr_url} ...')
-            #     self.auto_approve_logic()
-            #     return None
+            if getattr(self, "forced_event", None) == "APPROVE":
+                get_logger().info(f"Explicit approve command for PR: {self.pr_url}")
+                if hasattr(self.git_provider, "auto_approve"):
+                    res = self.git_provider.auto_approve()
+                    if res:
+                        get_logger().info("Successfully approved PR via explicit /review approve command")
+                        if get_settings().config.publish_output:
+                            self.git_provider.publish_comment("Approved PR")
+                    else:
+                        get_logger().warning("auto_approve returned False; could not approve PR")
+                return None
 
             get_logger().info(f'Reviewing PR: {self.pr_url} ...')
             relevant_configs = {'pr_reviewer': dict(get_settings().pr_reviewer),
@@ -266,11 +286,14 @@ class PRReviewer:
             )
             review_dict = (data_for_eval.get("review") or {}) if isinstance(data_for_eval, dict) else {}
             merge_rec = str(review_dict.get("merge_recommendation") or "").strip().lower()
+            forced_rc = getattr(self, "forced_event", None) == "REQUEST_CHANGES"
             should_request_changes = (
-                get_settings().pr_reviewer.get("enable_request_changes", False)
-                and merge_rec == "changes_required"
-                and hasattr(self.git_provider, "request_changes")
-            )
+                forced_rc
+                or (
+                    get_settings().pr_reviewer.get("enable_request_changes", False)
+                    and merge_rec == "changes_required"
+                )
+            ) and hasattr(self.git_provider, "request_changes")
             if should_request_changes:
                 get_logger().info("Submitting PR review with REQUEST_CHANGES event")
                 try:

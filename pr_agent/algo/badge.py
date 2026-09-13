@@ -33,11 +33,11 @@ PRIVACY_KEYWORDS = re.compile(
     re.IGNORECASE
 )
 CONSENT_KEYWORDS = re.compile(
-    r"\b(consent|opt-in|opt-out|terms\s+of\s+service|cookie\s+banner|gdpr\s+consent)\b",
+    r"\b(consent|opt-in|opt-out|terms\s+of\s+service|cookie\s+banner|gdpr\s+consent|approval|merge)\b",
     re.IGNORECASE
 )
 RELIABILITY_KEYWORDS = re.compile(
-    r"\b(reliab|error|exception|crash|leak|handle|timeout|retry|retries|fail|deadlock|race\s+condition|concurren|thread|memory|drain|robust|telemetry|logging|metrics|test|flake|hang|infinite\s+loop|null\s*pointer|none\s*type|panic)\b",
+    r"\b(reliab|error|exception|crash|leak|handle|timeout|retry|retries|fail|deadlock|race\s+condition|concurren|thread|memory|drain|robust|telemetry|logging|metrics|test|flake|hang|infinite\s+loop|null\s*pointer|none\s*type|panic|eval|cost)\b",
     re.IGNORECASE
 )
 
@@ -109,9 +109,23 @@ def infer_risk(text: str, score: Optional[int] = None) -> str:
                 return RISK_HIGH
             if score_val >= 7:
                 return RISK_MAJOR
-            if score_val <= 3:
-                return RISK_TRIVIAL
-            return RISK_MODERATE
+            if score_val >= 5:
+                return RISK_MODERATE
+            return RISK_TRIVIAL
+        except (TypeError, ValueError):
+            pass
+
+    score_match = re.search(r"\b(?:importance|score)\s*:\s*(\d+)\b", text, re.IGNORECASE)
+    if score_match:
+        try:
+            score_val = int(score_match.group(1))
+            if score_val >= 9:
+                return RISK_HIGH
+            if score_val >= 7:
+                return RISK_MAJOR
+            if score_val >= 5:
+                return RISK_MODERATE
+            return RISK_TRIVIAL
         except (TypeError, ValueError):
             pass
 
@@ -152,13 +166,33 @@ def infer_impact(text: str, pillar: str) -> str:
             consequence = "runtime failure"
         elif "timeout" in text.lower() or "hang" in text.lower():
             consequence = "operation timeout"
-        elif "test" in text.lower():
+        elif "test" in text.lower() or "eval" in text.lower():
             consequence = "test defect"
+        elif "cost" in text.lower():
+            consequence = "cost inefficiency"
+        elif "retry" in text.lower() or "retries" in text.lower():
+            consequence = "retry exhaustion"
+        elif "telemetry" in text.lower() or "logging" in text.lower() or "metrics" in text.lower():
+            consequence = "observability gap"
         else:
             consequence = "runtime instability"
     else:
-        consequence = "unspecified"
-
+        if not text.strip():
+            consequence = "unspecified"
+        else:
+            consequence = ""
+            cleaned_text = re.sub(r"\[[^\]]*\]", "", text).strip()
+            if cleaned_text.startswith("**Suggestion:**"):
+                cleaned_text = cleaned_text[len("**Suggestion:**"):].strip()
+            sentences = re.split(r"(?<=[.!?])\s+", cleaned_text)
+            first_sentence = sentences[0].strip() if sentences else ""
+            if first_sentence:
+                first_words = first_sentence.split()[:7]
+                candidate = " ".join(first_words).strip(".,:;!?`'\"").lower()
+                if candidate and candidate != "unspecified":
+                    consequence = candidate
+            if not consequence or consequence == "unspecified":
+                consequence = "maintainability defect"
     return f"{blast_radius} {consequence} ({scope})"
 
 

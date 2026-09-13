@@ -397,11 +397,45 @@ def test_badge_ensure_and_not_doubled():
     assert re_badged == badged
     assert re_badged.count("_ | _") == 2
 
-    # Default badge when no keywords
+    # Default badge when no keywords uses non-empty text consequence, never unspecified
     unspecified = ensure_badge("Something else changed here.")
-    assert unspecified.startswith("_🟡 moderate_ | _📦 other_ | _📁 unspecified (this repo)_")
+    assert unspecified.startswith("_🟡 moderate_ | _📦 other_ | _📁 something else changed here (this repo)_")
+    assert "unspecified" not in unspecified
     assert ensure_badge(unspecified) == unspecified
 
+    # Empty text fallback produces default badge
+    empty_badged = ensure_badge("")
+    assert empty_badged == "_🟡 moderate_ | _📦 other_ | _📁 unspecified (this repo)_"
+
+
+def test_badge_infer_from_score_category_and_impact():
+    from pr_agent.algo.badge import ensure_badge, parse_badge_line
+
+    # Existing suggestion with category security + importance 7 -> 🟠 + 🔒 + non-unspecified impact
+    sec_suggestion = "**Suggestion:** Restrict access token permissions. [security, importance: 7]"
+    sec_badged = ensure_badge(sec_suggestion, score=7)
+    assert sec_badged.startswith("_🟠 major_ | _🔒 security_ | _📁 unhandled exploit exposure (this repo)_")
+    assert "unspecified" not in sec_badged
+
+    # PR 1083 shaped fixture: general + importance 6 -> 🟡 + 🛡 or 📦 but impact not unspecified
+    pr_1083_suggestion = (
+        "**Suggestion:** The max_cost_per_1m_tokens field is currently set to null for all tiers. "
+        "If cost is a factor in tier definition, consider assigning meaningful values to this field "
+        "for T1 and T2 to reflect their expected cost tolerance. This will enable more granular "
+        "control and differentiation between tiers based on cost. [general, importance: 6]"
+    )
+    badged_1083 = ensure_badge(pr_1083_suggestion, score=6)
+    assert badged_1083.startswith("_🟡 moderate_ | _🛡 reliability_ | _📁 cost inefficiency (this repo)_")
+    assert "unspecified" not in badged_1083
+
+    # Already-badged body not doubled or replaced with weaker fallback
+    re_badged_1083 = ensure_badge(badged_1083, score=1)
+    assert re_badged_1083 == badged_1083
+    assert re_badged_1083.count("_ | _") == 2
+
+    # Valid 3-field badge not replaced
+    custom_badge_comment = "_🔵 trivial_ | _📦 other_ | _📁 custom consequence (this repo)_\n\nSome comment."
+    assert ensure_badge(custom_badge_comment, score=10) == custom_badge_comment
 
 def test_prepare_pr_review_includes_summary_headers():
     reviewer = PRReviewer.__new__(PRReviewer)

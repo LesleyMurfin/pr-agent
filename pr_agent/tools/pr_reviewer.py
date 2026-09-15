@@ -297,7 +297,7 @@ class PRReviewer:
             if should_request_changes:
                 get_logger().info("Submitting PR review with REQUEST_CHANGES event")
                 try:
-                    request_changes_body = "Changes requested based on PR review."
+                    request_changes_body = pr_review if pr_review else "Changes requested based on PR review."
                     if not self.git_provider.request_changes(request_changes_body):
                         get_logger().warning("request_changes returned False; provider may not support REQUEST_CHANGES reviews")
                 except Exception as e:
@@ -394,6 +394,15 @@ class PRReviewer:
                     )
                     pr_review = add_pr_review_identity(pr_review, identity_marker)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
+
+            # Always publish an issue comment to the PR Conversation thread
+            # so the merge recommendation / review is visible in the main PR timeline
+            # (issue comment) regardless of check runs, REQUEST_CHANGES, or persistent edits.
+            if get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
+                try:
+                    self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
+                except Exception as e:
+                    get_logger().exception(f"Failed to publish conversation issue comment: {e}")
         except Exception as e:
             review_failed = True
             get_logger().error(f"Failed to review PR: {e}")

@@ -1605,8 +1605,8 @@ class GithubProvider(GitProvider):
         Request / register self review on the current PR.
         Calls create_review_request with configured reviewer login (defaulting to
         GITHUB.APP_NAME, PR_REVIEWER.SELF_REVIEWER_LOGIN, or 'riley-pr-agent[bot]').
-        Always falls back to create_review(event='COMMENT') so Reviews still populates
-        even if create_review_request returns 422. Never falls back to literal 'pr-agent'.
+        Does NOT post create_review(event='COMMENT', body='Review started.') stub so the
+        visible review remains the actual review markdown.
         """
         try:
             if not self.pr:
@@ -1624,19 +1624,14 @@ class GithubProvider(GitProvider):
             else:
                 user_id = candidate.strip()
 
-            # Try create_review_request first
+            # Try create_review_request to request review from the bot without creating a stub review comment
             try:
                 self.pr.create_review_request(reviewers=[user_id])
                 get_logger().info(f"Successfully requested review from {user_id}")
+                return True
             except Exception as e:
-                get_logger().info(f"create_review_request({user_id}) failed ({e}); falling back to create_review(COMMENT)")
-
-            # Always create formal review (COMMENT) so Reviews list still fills
-            res = self.pr.create_review(event="COMMENT", body="Review started.")
-            if hasattr(res, "user") and hasattr(res.user, "login") and res.user.login:
-                self.github_user_id = res.user.login
-            get_logger().info("Successfully initialized PR review as reviewer")
-            return True
+                get_logger().info(f"create_review_request({user_id}) failed ({e})")
+                return False
         except Exception as e:
             get_logger().info(f"Could not initialize self-review ({e})")
             return False

@@ -12,32 +12,24 @@ from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
-def test_github_provider_request_self_review_calls_create_review_request_and_comment():
+def test_github_provider_request_self_review_calls_create_review_request_without_comment_stub():
     provider = GithubProvider.__new__(GithubProvider)
     provider.pr = MagicMock()
     provider.github_user_id = None
-    fake_review = SimpleNamespace(user=SimpleNamespace(login="riley-pr-agent[bot]"))
-    provider.pr.create_review.return_value = fake_review
 
     assert provider.request_self_review() is True
     provider.pr.create_review_request.assert_called_once_with(reviewers=["riley-pr-agent[bot]"])
-    provider.pr.create_review.assert_called_once_with(event="COMMENT", body="Review started.")
-    assert provider.github_user_id == "riley-pr-agent[bot]"
+    provider.pr.create_review.assert_not_called()
 
-
-def test_github_provider_request_self_review_handles_422_and_creates_comment():
+def test_github_provider_request_self_review_handles_422_failure():
     provider = GithubProvider.__new__(GithubProvider)
     provider.pr = MagicMock()
     provider.github_user_id = None
     provider.pr.create_review_request.side_effect = RuntimeError("422 Reviews may only be requested from collaborators")
-    fake_review = SimpleNamespace(user=SimpleNamespace(login="riley-pr-agent[bot]"))
-    provider.pr.create_review.return_value = fake_review
 
-    assert provider.request_self_review() is True
+    assert provider.request_self_review() is False
     provider.pr.create_review_request.assert_called_once_with(reviewers=["riley-pr-agent[bot]"])
-    provider.pr.create_review.assert_called_once_with(event="COMMENT", body="Review started.")
-    assert provider.github_user_id == "riley-pr-agent[bot]"
-
+    provider.pr.create_review.assert_not_called()
 
 def test_github_provider_request_self_review_uses_custom_config_and_never_pr_agent():
     provider = GithubProvider.__new__(GithubProvider)
@@ -62,10 +54,10 @@ def test_github_provider_request_self_review_uses_custom_config_and_never_pr_age
 def test_github_provider_request_self_review_handles_failure():
     provider = GithubProvider.__new__(GithubProvider)
     provider.pr = MagicMock()
-    provider.pr.create_review.side_effect = RuntimeError("API error")
+    provider.pr.create_review_request.side_effect = RuntimeError("API error")
 
     assert provider.request_self_review() is False
-
+    provider.pr.create_review.assert_not_called()
 
 def test_github_provider_request_changes():
     provider = GithubProvider.__new__(GithubProvider)
@@ -203,11 +195,73 @@ def test_pr_reviewer_request_changes_driven_by_run(enable_request_changes):
             asyncio.run(reviewer.run())
 
         if enable_request_changes:
-            reviewer.git_provider.request_changes.assert_called_once_with("Changes requested based on PR review.")
+            reviewer.git_provider.request_changes.assert_called_once_with("Prepared review body")
         else:
             reviewer.git_provider.request_changes.assert_not_called()
     finally:
         restore_settings(snapshot)
+def test_pr_reviewer_always_publishes_conversation_comment_and_uses_review_body_for_request_changes():
+    snapshot = snapshot_settings([
+        "config.publish_output",
+        "pr_reviewer.enable_request_changes",
+        "pr_reviewer.require_merge_recommendation",
+        "pr_reviewer.persistent_comment",
+    ])
+    try:
+        get_settings().set("config.publish_output", True)
+        get_settings().set("pr_reviewer.enable_request_changes", True)
+        get_settings().set("pr_reviewer.require_merge_recommendation", False)
+        get_settings().set("pr_reviewer.persistent_comment", True)
+
+        reviewer = PRReviewer.__new__(PRReviewer)
+        reviewer.git_provider = MagicMock()
+        reviewer.git_provider.get_files.return_value = [
+            FilePatchInfo(base_file="a.py", head_file="a.py", patch="@@ -1 +1 @@", filename="a.py")
+        ]
+        reviewer.git_provider.should_publish_review_as_thread.return_value = False
+        reviewer.git_provider.publish_comment = MagicMock()
+        reviewer.git_provider.request_changes = MagicMock(return_value=True)
+        reviewer.git_provider.publish_persistent_comment = MagicMock()
+        reviewer.git_provider.publish_persistent_comment_full = MagicMock()
+
+        reviewer.incremental = SimpleNamespace(is_incremental=False)
+        reviewer.pr_url = "https://github.com/org/repo/pull/1"
+        reviewer.vars = {}
+        reviewer.prediction = "dummy prediction"
+        reviewer.prediction_data = {
+            "review": {
+                "merge_recommendation": "changes_required"
+            }
+        }
+
+        async def fake_extract(git_provider, vars):
+            return None
+
+        async def fake_retry(func, *args, **kwargs):
+            return None
+
+        review_markdown = "## PR Reviewer Guide 🔍\n\n### ✅ Merge recommendation: changes_required\n\nPlease fix the issues."
+        with (
+            patch("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", side_effect=fake_extract),
+            patch("pr_agent.tools.pr_reviewer.retry_with_fallback_models", side_effect=fake_retry),
+            patch.object(reviewer, "_prepare_pr_review", return_value=review_markdown),
+            patch.object(reviewer, "_should_publish_review_no_suggestions", return_value=True),
+        ):
+            asyncio.run(reviewer.run())
+
+        # 1. request_changes body should be the review markdown (or contain merge recommendation)
+        reviewer.git_provider.request_changes.assert_called_once_with(review_markdown)
+
+        # 2. publish_comment MUST be called with the review body (issue comment in conversation)
+        non_progress_comments = [
+            call.args[0] for call in reviewer.git_provider.publish_comment.call_args_list
+            if "Preparing review" not in str(call.args[0])
+        ]
+        assert len(non_progress_comments) >= 1
+        assert any("Merge recommendation" in c and "Please fix the issues." in c for c in non_progress_comments)
+    finally:
+        restore_settings(snapshot)
+
 
 def test_pr_reviewer_request_changes_warns_when_not_supported():
     snapshot = snapshot_settings([
@@ -254,7 +308,7 @@ def test_pr_reviewer_request_changes_warns_when_not_supported():
             patch("pr_agent.tools.pr_reviewer.get_logger") as mock_get_logger,
         ):
             asyncio.run(reviewer.run())
-        reviewer.git_provider.request_changes.assert_called_once_with("Changes requested based on PR review.")
+        reviewer.git_provider.request_changes.assert_called_once_with("Prepared review body")
         mock_get_logger().warning.assert_any_call(
             "request_changes returned False; provider may not support REQUEST_CHANGES reviews"
         )
@@ -587,8 +641,7 @@ def test_pr_reviewer_forces_request_changes_via_args():
             patch.object(reviewer, "_should_publish_review_no_suggestions", return_value=True),
         ):
             asyncio.run(reviewer.run())
-
-        reviewer.git_provider.request_changes.assert_called_once_with("Changes requested based on PR review.")
+        reviewer.git_provider.request_changes.assert_called_once_with("Prepared review body")
     finally:
         restore_settings(snapshot)
 

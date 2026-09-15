@@ -29,10 +29,10 @@ CMD ["python", "pr_agent/servers/github_polling.py"]
 
 FROM base AS github_action
 ADD pr_agent pr_agent
+COPY riley_skills /app/riley_skills
 ADD github_action/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
-
 FROM base AS gitlab_webhook
 ADD pr_agent pr_agent
 CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "pr_agent/servers/gunicorn_config.py", "--forwarded-allow-ips", "*", "pr_agent.servers.gitlab_webhook:app"]

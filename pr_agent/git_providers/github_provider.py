@@ -18,6 +18,7 @@ from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
+from ..algo.badge import ensure_badge
 from ..algo.inline_comment_dedup import (
     body_fingerprint,
     body_with_markers,
@@ -596,6 +597,10 @@ class GithubProvider(GitProvider):
         store = None
         pending_fingerprints = []
         dedup_code_fp_key = "_dedup_code_fp"
+        comments = [
+            dict(c, body=ensure_badge(c["body"])) if c and "body" in c else c
+            for c in comments
+        ]
         if get_settings().get("config.persistent_inline_comments", False):
             store = get_inline_comment_store(self)
             local_seen = set()
@@ -1594,6 +1599,63 @@ class GithubProvider(GitProvider):
         except Exception as e:
             get_logger().exception(f"Failed to auto-approve, error: {e}")
             return False
+
+    def request_self_review(self) -> bool:
+        """
+        Request / register self review on the current PR.
+        Calls create_review_request with configured reviewer login (defaulting to
+        GITHUB.APP_NAME, PR_REVIEWER.SELF_REVIEWER_LOGIN, or 'riley-pr-agent[bot]').
+        Does NOT post create_review(event='COMMENT', body='Review started.') stub so the
+        visible review remains the actual review markdown.
+        """
+        try:
+            if not self.pr:
+                get_logger().warning("Cannot request review: no PR object found")
+                return False
+
+            # Determine target reviewer login; never fallback to literal "pr-agent"
+            candidate = get_settings().get("PR_REVIEWER.SELF_REVIEWER_LOGIN", None)
+            if not candidate:
+                app_name = get_settings().get("GITHUB.APP_NAME", None)
+                if app_name and app_name.strip().lower() != "pr-agent":
+                    candidate = app_name
+            if not candidate or candidate.strip() == "" or candidate.strip().lower() == "pr-agent":
+                user_id = "riley-pr-agent[bot]"
+            else:
+                user_id = candidate.strip()
+
+            # Try create_review_request to request review from the bot without creating a stub review comment
+            try:
+                self.pr.create_review_request(reviewers=[user_id])
+                get_logger().info(f"Successfully requested review from {user_id}")
+                return True
+            except Exception as e:
+                get_logger().info(f"create_review_request({user_id}) failed ({e})")
+                return False
+        except Exception as e:
+            get_logger().info(f"Could not initialize self-review ({e})")
+            return False
+
+    def request_changes(self, body: str) -> bool:
+        """
+        Submit a formal GitHub PR review with event='REQUEST_CHANGES'.
+        """
+        try:
+            if not self.pr:
+                get_logger().error("Cannot request changes: no PR object found")
+                return False
+            body = self.limit_output_characters(body, self.max_comment_chars)
+            res = self.pr.create_review(body=body, event="REQUEST_CHANGES")
+            state = getattr(res, "state", None)
+            if state == "CHANGES_REQUESTED":
+                get_logger().info("Successfully submitted review with REQUEST_CHANGES")
+                return True
+            get_logger().warning(f"Unexpected review state after REQUEST_CHANGES: {state}")
+            return False
+        except Exception as e:
+            get_logger().exception(f"Failed to submit REQUEST_CHANGES review, error: {e}")
+            return False
+
 
     def calc_pr_statistics(self, pull_request_data: dict):
             return {}

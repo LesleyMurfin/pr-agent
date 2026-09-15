@@ -126,6 +126,8 @@ review_heading = "PR Reviewer Guide"
 persistent_finding_state=true # Persist review finding state across complete review runs.
 
 inline_key_issues=false
+enable_request_changes=false
+request_self_review=false
 extra_instructions = ""
 num_max_findings = 3
 final_update_message = true
@@ -143,6 +145,7 @@ enable_review_coverage_footer=true
 # into chunks, review each chunk, and merge the per-chunk results into one review.
 enable_large_pr_chunking=false
 max_number_of_calls=3 # maximum number of chunk review calls, used only when enable_large_pr_chunking is true
+enable_agent_prompt=true # Append CodeRabbit-style collapsible agent prompt and autofix footer
 
 [pr_description] # /describe #
 publish_labels=false

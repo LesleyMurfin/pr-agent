@@ -1,1 +1,3 @@
 FROM pragent/pr-agent:github_action
+COPY riley_skills /app/riley_skills
+COPY pr_agent /app/pr_agent

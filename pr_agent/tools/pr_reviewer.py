@@ -395,10 +395,14 @@ class PRReviewer:
                     pr_review = add_pr_review_identity(pr_review, identity_marker)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
 
-            # Always publish an issue comment to the PR Conversation thread
-            # so the merge recommendation / review is visible in the main PR timeline
-            # (issue comment) regardless of check runs, REQUEST_CHANGES, or persistent edits.
-            if get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
+            # Publish an issue comment to the PR Conversation thread so the merge
+            # recommendation / review is visible in the main PR timeline, unless a formal
+            # REQUEST_CHANGES review was already submitted (which already carries the body).
+            if (
+                get_settings().pr_reviewer.persistent_comment
+                and not self.incremental.is_incremental
+                and not should_request_changes
+            ):
                 try:
                     self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
                 except Exception as e:

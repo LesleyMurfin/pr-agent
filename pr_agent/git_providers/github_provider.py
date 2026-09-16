@@ -81,6 +81,7 @@ class GithubProvider(GitProvider):
         self.git_files = None
         self.incremental = IncrementalPR(False)
         self._check_run_ids: dict = {}
+        self._published_inline_comment_bodies: list = []
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
             self.pr_commits = list(self.pr.get_commits())
@@ -189,6 +190,7 @@ class GithubProvider(GitProvider):
     def set_pr(self, pr_url: str):
         self.repo, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
+        self._published_inline_comment_bodies = []
 
     def _get_incremental_commits(self):
         if not self.pr_commits:
@@ -654,6 +656,11 @@ class GithubProvider(GitProvider):
         try:
             # publish all comments in a single message
             self.pr.create_review(commit=self.last_commit_id, comments=comments)
+            if not hasattr(self, "_published_inline_comment_bodies"):
+                self._published_inline_comment_bodies = []
+            for comment in comments:
+                if isinstance(comment, dict) and comment.get("body"):
+                    self._published_inline_comment_bodies.append(comment.get("body", ""))
             # The whole batch posted; record its fingerprints so the rest of this
             # run dedups against them. Cross-run dedup relies on the markers in the
             # posted bodies, so comments the fallback below drops stay unrecorded
@@ -676,6 +683,22 @@ class GithubProvider(GitProvider):
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
                 raise
 
+
+    def get_recent_inline_comment_bodies(self) -> list[str]:
+        return list(getattr(self, "_published_inline_comment_bodies", []))
+
+    def get_persistent_comment_bodies(self) -> list[str]:
+        bodies = list(getattr(self, "_published_inline_comment_bodies", []))
+        if not getattr(self, "pr", None):
+            return bodies
+        try:
+            for comment in self.pr.get_comments():
+                body = getattr(comment, "body", "") or ""
+                if body and body not in bodies:
+                    bodies.append(body)
+        except Exception as e:
+            get_logger().warning(f"Failed to fetch GitHub PR inline comments: {e}")
+        return bodies
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
         """
         Retrieves all comments in the same thread as the given comment.
@@ -841,6 +864,11 @@ class GithubProvider(GitProvider):
         # publish as a group the verified comments
         if verified_comments:
             self.pr.create_review(commit=self.last_commit_id, comments=verified_comments)
+            if not hasattr(self, "_published_inline_comment_bodies"):
+                self._published_inline_comment_bodies = []
+            for comment in verified_comments:
+                if isinstance(comment, dict) and comment.get("body"):
+                    self._published_inline_comment_bodies.append(comment.get("body", ""))
 
         # try to publish one by one the invalid comments as a one-line code comment
         if invalid_comments and get_settings().github.try_fix_invalid_inline_comments:

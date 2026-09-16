@@ -141,9 +141,9 @@ def _azure_provider(existing_threads=None):
     return provider
 
 
-def test_inline_publication_verification_is_limited_to_azure_devops():
+def test_inline_publication_verification_supports_azure_devops_and_github():
     assert d.can_verify_inline_comment_publication(_azure_provider()) is True
-    assert d.can_verify_inline_comment_publication(_gh_provider([])) is False
+    assert d.can_verify_inline_comment_publication(_gh_provider([])) is True
     assert d.can_verify_inline_comment_publication(_gl_provider([])) is False
 
     class FooProvider:

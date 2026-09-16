@@ -117,6 +117,8 @@ class PRReviewer:
         self._review_state_block_reason = None
         self._review_finding_previous_state = None
         self._review_state_preserved = False
+        self._all_key_issues = []
+        self._security_concerns = None
         question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
@@ -286,12 +288,27 @@ class PRReviewer:
             )
             review_dict = (data_for_eval.get("review") or {}) if isinstance(data_for_eval, dict) else {}
             merge_rec = str(review_dict.get("merge_recommendation") or "").strip().lower()
+            clean_merge_rec = merge_rec.replace("-", "_").replace(" ", "_").rstrip(".")
+            is_changes_required_rec = (
+                clean_merge_rec == "changes_required"
+                or "changes_required" in clean_merge_rec
+                or "changes required" in merge_rec
+            )
+            sec_concerns = getattr(self, "_security_concerns", None) or review_dict.get("security_concerns")
+            has_security_findings = self._has_security_concerns(sec_concerns)
+            key_issues = getattr(self, "_all_key_issues", None) or review_dict.get("key_issues_to_review") or []
+            has_high_severity_issues = self._has_high_severity_key_issues(key_issues)
             forced_rc = getattr(self, "forced_event", None) == "REQUEST_CHANGES"
+            findings_require_changes = (
+                is_changes_required_rec
+                or has_security_findings
+                or has_high_severity_issues
+            )
             should_request_changes = (
                 forced_rc
                 or (
                     get_settings().pr_reviewer.get("enable_request_changes", False)
-                    and merge_rec == "changes_required"
+                    and findings_require_changes
                 )
             ) and hasattr(self.git_provider, "request_changes")
             if should_request_changes:
@@ -695,6 +712,42 @@ class PRReviewer:
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
 
+    def _has_security_concerns(self, security_concerns) -> bool:
+        if not security_concerns:
+            return False
+        sec_str = str(security_concerns).strip().lower()
+        if sec_str in ("no", "false", "none", "n/a", "no.", "no issues", "no concern", "no concerns"):
+            return False
+        if sec_str.startswith(("no ", "no.", "no\n", "no,", "none ")):
+            return False
+        return True
+
+    def _has_high_severity_key_issues(self, issues: list) -> bool:
+        if not isinstance(issues, list) or not issues:
+            return False
+        critical_keywords = (
+            "bug", "vulnerability", "security", "leak", "critical",
+            "crash", "data loss", "injection", "corruption", "overflow",
+            "error", "flaw", "exploit"
+        )
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            header = str(issue.get("issue_header") or "").strip().lower()
+            content = str(issue.get("issue_content") or "").strip().lower()
+            if any(kw in header for kw in critical_keywords):
+                return True
+            if "🔴 high" in content or "🟠 major" in content or "🔴" in content or "🟠" in content:
+                return True
+            if any(kw in content for kw in (
+                "security vulnerability", "data loss", "memory leak", "resource leak",
+                "sql injection", "remote code execution", "privilege escalation",
+                "authentication bypass", "cross-site scripting"
+            )):
+                return True
+        return False
+
+
     async def _prepare_prediction(self, model: str) -> None:
         raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
         if raw_prompt_vars is not None:
@@ -858,6 +911,8 @@ class PRReviewer:
             data['review']['key_issues_to_review'] = key_issues_to_review
 
         all_key_issues = copy.deepcopy(data.get("review", {}).get("key_issues_to_review") or [])
+        self._all_key_issues = all_key_issues
+        self._security_concerns = data.get("review", {}).get("security_concerns")
         self._prepare_review_finding_state(data)
         if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False):
             data = self._publish_key_issues_as_inline_comments(data)
@@ -1071,7 +1126,7 @@ class PRReviewer:
                 store.add_body(body)
         except Exception as e:
             get_logger().warning(
-                f"Inline key-issue publishing cannot verify new Azure DevOps threads, error: {e}; "
+                f"Inline key-issue publishing cannot verify new inline threads/comments, error: {e}; "
                 "keeping findings in the review summary")
             return set()
         return {fingerprint for fingerprint in fingerprints if store.seen(fingerprint)}
@@ -1094,7 +1149,7 @@ class PRReviewer:
         store = get_inline_comment_store(self.git_provider)
         store.load()
         if store.load_failed:
-            get_logger().warning("Inline key-issue publishing cannot verify existing Azure DevOps threads; "
+            get_logger().warning("Inline key-issue publishing cannot verify existing inline threads/comments; "
                                  "keeping findings in the review summary")
             return data
         remaining_issues = []
@@ -1137,7 +1192,7 @@ class PRReviewer:
                               "end_line": comment["relevant_lines_end"]}
                              for comment in candidate_comments.values()]
                 get_logger().warning(
-                    f"Failed to publish review findings as Azure DevOps threads, error: {e}",
+                    f"Failed to publish review findings as inline threads/comments, error: {e}",
                     artifact={"locations": locations})
             verified_locations = self._published_inline_key_issue_fingerprints(store, set(candidate_comments))
             for location_fingerprint, comment in candidate_comments.items():
@@ -1147,7 +1202,7 @@ class PRReviewer:
                     store.add(location_fingerprint)
                     published += len(issues_for_location)
                     continue
-                get_logger().warning("Failed to publish a review finding as an Azure DevOps inline comment, "
+                get_logger().warning("Failed to publish a review finding as an inline thread/comment, "
                                      "keeping it in the summary",
                                      artifact={"relevant_file": comment["relevant_file"],
                                                "start_line": comment["relevant_lines_start"],

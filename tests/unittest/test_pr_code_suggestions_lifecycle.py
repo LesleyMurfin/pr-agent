@@ -400,7 +400,7 @@ async def test_run_retains_progress_handle_when_check_run_cleanup_fails(monkeypa
 @pytest.mark.parametrize("propagate_errors", [False, True])
 @pytest.mark.parametrize("show_progress", [False, True])
 @pytest.mark.parametrize("supports_artifact", [False, True])
-async def test_run_reports_exhausted_inline_publication_retries(
+async def test_run_falls_back_to_summary_when_inline_publication_exhausted(
     monkeypatch, propagate_errors, show_progress, supports_artifact
 ):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
@@ -416,6 +416,7 @@ async def test_run_reports_exhausted_inline_publication_retries(
         tool._validate_suggestion = MagicMock(return_value=(True, "", True))
         tool.dedent_code = MagicMock(side_effect=lambda _file, _line, code: code)
         suggestion = {
+            "one_sentence_summary": "Use the helper",
             "relevant_file": "app.py",
             "relevant_lines_start": 1,
             "relevant_lines_end": 1,
@@ -423,6 +424,7 @@ async def test_run_reports_exhausted_inline_publication_retries(
             "existing_code": "old()",
             "improved_code": "new()",
             "label": "maintainability",
+            "score": 9,
         }
         monkeypatch.setattr(
             pr_code_suggestions_module,
@@ -435,16 +437,19 @@ async def test_run_reports_exhausted_inline_publication_retries(
         settings.config.propagate_tool_errors = propagate_errors
         settings.pr_code_suggestions.commitable_code_suggestions = True
 
-        if propagate_errors:
-            with pytest.raises(RuntimeError, match="Failed to publish code suggestions"):
-                await tool.run()
-        else:
-            await tool.run()
+        # Suggestions were generated successfully, but every inline/committable publish
+        # attempt is exhausted (e.g. a non-422 GitHub error such as a 403 permission flap).
+        # The run must recover by delivering the suggestions as a plain summary comment
+        # instead of raising or posting the generic "Failed to generate" message - this
+        # holds regardless of propagate_tool_errors, since the overall operation now
+        # succeeds via the degraded-delivery fallback.
+        await tool.run()
 
         assert provider.publish_code_suggestions.call_count == (1 if supports_artifact else 2)
-        assert tool._output_published is False
+        assert tool._output_published is True
         published_comments = [call.args[0] for call in provider.publish_comment.call_args_list]
-        assert published_comments[-1] == "Failed to generate code suggestions for PR"
+        assert published_comments[-1] != "Failed to generate code suggestions for PR"
+        assert "Use the helper." in published_comments[-1]
         if show_progress:
             assert published_comments[0] == "Preparing suggestions..."
             provider.remove_comment.assert_called_once_with(provider.publish_comment.return_value)

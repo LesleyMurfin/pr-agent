@@ -1114,7 +1114,30 @@ class PRCodeSuggestions:
             self.git_provider.publish_comment("\n\n---\n\n".join(fallback_comments))
             self._output_published = True
         if code_suggestions and not is_successful:
-            raise RuntimeError("Failed to publish code suggestions after individual retries")
+            if getattr(self, "_output_published", False):
+                # Something (fallback comments / coverage footer) already reached the PR;
+                # preserve the existing signal that the committable delivery failed.
+                raise RuntimeError("Failed to publish code suggestions after individual retries")
+            # Nothing was delivered at all: the suggestions were generated successfully but the
+            # inline/committable publish path is exhausted (e.g. a non-422 GitHub error such as a
+            # 403 permission flap or rate limit). Don't let a publish failure masquerade as a
+            # generation failure and discard already-computed suggestions - fall back to the same
+            # plain-comment summary used when commitable_code_suggestions is disabled.
+            get_logger().warning(
+                "Failed to publish committable code suggestions inline; "
+                "falling back to a summarized PR comment so the suggestions are not lost"
+            )
+            try:
+                fallback_body = self.generate_summarized_suggestions(data)
+                fallback_body += coverage_footer
+                self.git_provider.publish_comment(fallback_body)
+                self._output_published = True
+            except Exception as fallback_error:
+                get_logger().exception(
+                    "Failed to publish summarized fallback after inline publish failure, "
+                    f"error: {fallback_error}"
+                )
+                raise RuntimeError("Failed to publish code suggestions after individual retries")
         return
 
     def _get_diff_file(self, relevant_file):

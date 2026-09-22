@@ -78,6 +78,18 @@ class TestSortFilesByMainLanguages:
         ]
         assert sort_files_by_main_languages(languages, files) == expected_output
 
+    # An all-non-numeric languages dict (e.g. only PyGithub's injected "url" key) is filtered
+    # to {} by numeric_languages(), so sort_files_by_main_languages must take the same
+    # "if not languages" -> "Other" bucket path as an actually-empty languages dict.
+    def test_all_non_numeric_languages_falls_back_to_other(self):
+        languages = {'url': 'https://api.github.com/repos/o/r/languages'}
+        files = [
+            type('', (object,), {'filename': 'file1.py'})(),
+            type('', (object,), {'filename': 'file2.java'})()
+        ]
+        expected_output = [{'language': 'Other', 'files': files}]
+        assert sort_files_by_main_languages(languages, files) == expected_output
+
     def test_main_pr_language_ignores_non_numeric_entries(self):
         from pr_agent.git_providers.git_provider import get_main_pr_language
 

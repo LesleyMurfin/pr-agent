@@ -202,6 +202,8 @@ class PRReviewer:
         self._review_state_block_reason = None
         self._review_finding_previous_state = None
         self._review_state_preserved = False
+        self._all_key_issues = []
+        self._security_concerns = None
         question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
@@ -281,6 +283,11 @@ class PRReviewer:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
                 return None
+            if get_settings().config.publish_output and get_settings().pr_reviewer.get("request_self_review", False):
+                try:
+                    self.git_provider.request_self_review()
+                except Exception as e:
+                    get_logger().info(f"Failed to request self-review: {e}")
 
             if self.incremental.is_incremental:
                 can_run = self._can_run_incremental_review()
@@ -352,6 +359,44 @@ class PRReviewer:
                 get_logger().info(reason)
                 get_settings().data = {"artifact": pr_review}
                 return
+
+            # Check if changes are requested by model recommendation or findings
+            data_for_eval = self.prediction_data if getattr(self, "prediction_data", None) is not None else (
+                self._load_review_yaml(self.prediction) if getattr(self, "prediction", None) else {}
+            )
+            review_dict = (data_for_eval.get("review") or {}) if isinstance(data_for_eval, dict) else {}
+            merge_rec = str(review_dict.get("merge_recommendation") or "").strip().lower()
+            clean_merge_rec = merge_rec.replace("-", "_").replace(" ", "_").rstrip(".")
+            is_changes_required_rec = (
+                clean_merge_rec == "changes_required"
+                or "changes_required" in clean_merge_rec
+                or "changes required" in merge_rec
+            )
+            sec_concerns = getattr(self, "_security_concerns", None) or review_dict.get("security_concerns")
+            has_security_findings = self._has_security_concerns(sec_concerns)
+            key_issues = getattr(self, "_all_key_issues", None) or review_dict.get("key_issues_to_review") or []
+            has_high_severity_issues = self._has_high_severity_key_issues(key_issues)
+            forced_rc = getattr(self, "forced_event", None) == "REQUEST_CHANGES"
+            findings_require_changes = (
+                is_changes_required_rec
+                or has_security_findings
+                or has_high_severity_issues
+            )
+            should_request_changes = (
+                forced_rc
+                or (
+                    get_settings().pr_reviewer.get("enable_request_changes", False)
+                    and findings_require_changes
+                )
+            ) and hasattr(self.git_provider, "request_changes")
+            if should_request_changes:
+                get_logger().info("Submitting PR review with REQUEST_CHANGES event")
+                try:
+                    request_changes_body = pr_review if pr_review else "Changes requested based on PR review."
+                    if not self.git_provider.request_changes(request_changes_body):
+                        get_logger().warning("request_changes returned False; provider may not support REQUEST_CHANGES reviews")
+                except Exception as e:
+                    get_logger().exception(f"Failed to submit review as REQUEST_CHANGES: {e}")
 
             # publish the review
             # Providers that support it (GitLab) can post the review's final comment as a resolvable thread.
@@ -788,6 +833,41 @@ class PRReviewer:
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
 
+    def _has_security_concerns(self, security_concerns) -> bool:
+        if not security_concerns:
+            return False
+        sec_str = str(security_concerns).strip().lower()
+        if sec_str in ("no", "false", "none", "n/a", "no.", "no issues", "no concern", "no concerns"):
+            return False
+        if sec_str.startswith(("no ", "no.", "no\n", "no,", "none ")):
+            return False
+        return True
+
+    def _has_high_severity_key_issues(self, issues: list) -> bool:
+        if not isinstance(issues, list) or not issues:
+            return False
+        critical_keywords = (
+            "bug", "vulnerability", "security", "leak", "critical",
+            "crash", "data loss", "injection", "corruption", "overflow",
+            "error", "flaw", "exploit"
+        )
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            header = str(issue.get("issue_header") or "").strip().lower()
+            content = str(issue.get("issue_content") or "").strip().lower()
+            if any(kw in header for kw in critical_keywords):
+                return True
+            if "🔴 high" in content or "🟠 major" in content or "🔴" in content or "🟠" in content:
+                return True
+            if any(kw in content for kw in (
+                "security vulnerability", "data loss", "memory leak", "resource leak",
+                "sql injection", "remote code execution", "privilege escalation",
+                "authentication bypass", "cross-site scripting"
+            )):
+                return True
+        return False
+
     async def _prepare_prediction(self, model: str) -> None:
         # Each model attempt owns a fresh result. A malformed primary must not
         # leave state that can be mistaken for a successful fallback response.
@@ -1155,6 +1235,9 @@ class PRReviewer:
             key_issues_to_review = data['review'].pop('key_issues_to_review')
             data['review']['key_issues_to_review'] = key_issues_to_review
 
+        all_key_issues = copy.deepcopy(data.get("review", {}).get("key_issues_to_review") or [])
+        self._all_key_issues = all_key_issues
+        self._security_concerns = data.get("review", {}).get("security_concerns")
         self._prepare_review_finding_state(data)
         if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False):
             data = self._publish_key_issues_as_inline_comments(data)
